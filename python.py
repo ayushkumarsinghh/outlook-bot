@@ -66,49 +66,92 @@ def run_flow(email, password):
         submit_btn.click()
         print("Clicked 'Next' (Submit) button.")
         
-        # Click the "No" button on the Stay Signed In prompt
-        print("Waiting for 'Stay signed in' prompt...")
-        no_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='secondaryButton']")))
-        no_btn.click()
-        print("Clicked 'No' button on 'Stay signed in' prompt.")
+        # Click "Cancel" if Microsoft prompts for passkey setup
+        print("Checking for passkey setup prompts...")
+        time.sleep(2)
+        for i in range(7):
+            try:
+                # Did the Microsoft "Setting up your passkey..." screen appear? Click the grey "Cancel" button!
+                cancel_btns = driver.find_elements(By.XPATH, "//button[contains(text(), 'Cancel')] | //input[@id='idCancel'] | //*[@id='idCancel'] | //input[@value='Cancel'] | //*[contains(text(), 'Cancel')]")
+                passkey_header = driver.find_elements(By.XPATH, "//*[contains(text(), 'Setting up your passkey') or contains(text(), 'passkey')]")
+                
+                if cancel_btns and (cancel_btns[0].is_displayed() or (passkey_header and len(passkey_header) > 0)):
+                    cancel_btns[0].click()
+                    print(f"✅ Clicked Microsoft Passkey setup 'Cancel' button (Attempt {i+1})!")
+                    time.sleep(4)
+                else:
+                    break
+            except Exception as e_skip:
+                print(f"Passkey check iteration {i+1} handled exception: {e_skip}")
+                break
         
-        # Locate search bar and input search term
-        print("Waiting for Outlook inbox to load and search bar to be clickable...")
-        search_input = wait.until(EC.element_to_be_clickable((By.ID, "topSearchInput")))
-        search_input.click()
-        search_input.clear()
-        
-        search_term = "chatgpt plus"
-        print(f"Typing search query: {search_term}")
-        for char in search_term:
-            search_input.send_keys(char)
-            time.sleep(0.05)
-            
-        time.sleep(1)
-        search_input.send_keys("\n")
-        print("Search submitted successfully.")
-        
-        # Wait for search results to load
-        print("Waiting for search results to display...")
-        time.sleep(10)
-        
-        # Scan search list items for ChatGPT Plus subscription email
+        # Double-scan strategy: 
+        # 1. Scan the inbox immediately on load (before typing any search queries)
+        print("Inbox loaded. Scanning initial list of visible emails...")
+        time.sleep(3)
         found_subscription = False
+        
         try:
             items = driver.find_elements(By.CSS_SELECTOR, "div[data-focusable-row='true'], div[role='option'], div[data-item-index]")
-            print(f"Found {len(items)} email list items to scan.")
+            print(f"Found {len(items)} visible email list items to scan initially.")
             
             for item in items:
-                text = (item.text or "").lower()
-                aria_label = (item.get_attribute("aria-label") or "").lower()
-                combined_text = text + " " + aria_label
+                text = (item.text or "")
+                aria_label = (item.get_attribute("aria-label") or "")
+                combined_text = (text + " " + aria_label).lower()
                 
-                # Check strictly for subscription receipt phrases (never generic words)
-                if "successfully subscribed" in combined_text or "your new plan" in combined_text or "subscribed to chatgpt" in combined_text:
+                # Print email subject preview to log
+                subject_preview = aria_label.split("2026")[0].strip() if "2026" in aria_label else aria_label[:80].strip()
+                print(f"🔍 Checking email: {subject_preview}")
+                
+                # Check strictly for subscription receipt phrases
+                if any(phrase in combined_text for phrase in ["successfully subscribed", "your new plan", "subscribed to chatgpt", "chatgpt plus", "chatgpt - your new plan"]):
+                    print(f"🎉 Matched subscription email in initial load: {subject_preview}")
                     found_subscription = True
                     break
         except Exception as scan_err:
-            print("Error scanning items in list:", scan_err)
+            print("Error scanning items in initial list:", scan_err)
+            
+        # 2. If not found on load, perform search for "openai" to refresh the list and scan again
+        if not found_subscription:
+            print("\n🔍 Subscription email not visible on load. Performing 'openai' search...")
+            try:
+                search_input = wait.until(EC.element_to_be_clickable((By.ID, "topSearchInput")))
+                search_input.click()
+                search_input.clear()
+                
+                search_term = "openai"
+                print(f"Typing search query: {search_term}")
+                for char in search_term:
+                    search_input.send_keys(char)
+                    time.sleep(0.05)
+                    
+                time.sleep(1)
+                search_input.send_keys("\n")
+                print("Search submitted successfully.")
+                
+                # Wait for search results to load
+                print("Waiting for search results to display...")
+                time.sleep(10)
+                
+                # Scan search results
+                items = driver.find_elements(By.CSS_SELECTOR, "div[data-focusable-row='true'], div[role='option'], div[data-item-index]")
+                print(f"Found {len(items)} email list items in search results to scan.")
+                
+                for item in items:
+                    text = (item.text or "")
+                    aria_label = (item.get_attribute("aria-label") or "")
+                    combined_text = (text + " " + aria_label).lower()
+                    
+                    subject_preview = aria_label.split("2026")[0].strip() if "2026" in aria_label else aria_label[:80].strip()
+                    print(f"🔍 Checking search email: {subject_preview}")
+                    
+                    if any(phrase in combined_text for phrase in ["successfully subscribed", "your new plan", "subscribed to chatgpt", "chatgpt plus", "chatgpt - your new plan"]):
+                        print(f"🎉 Matched subscription email in search: {subject_preview}")
+                        found_subscription = True
+                        break
+            except Exception as search_err:
+                print("Error during search and scan:", search_err)
         
         if found_subscription:
             print("\n🎉 yes chatgpt plus is subscribed\n")
