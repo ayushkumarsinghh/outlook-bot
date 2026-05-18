@@ -1,0 +1,25 @@
+# Credentials & Secrets
+.env
+
+# Environments
+venv/
+env/
+ENV/
+.env/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Browser/Driver Temporary Logs
+chromedriver.log
+geckodriver.log
+ghostdriver.log
+
+# Exclude unrelated local files
+py1.py
+py2.py
+spotifylinks.txt
+
