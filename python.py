@@ -550,50 +550,46 @@ def fetch_session_only(driver):
         print(f"Error fetching session for plan check: {e}")
         return None
 
-def extract_token(user_input):
-    try:
-        data = json.loads(user_input)
-        if "accessToken" in data: return data["accessToken"]
-    except: pass
-    return user_input.strip()
-
-def generate_checkout_link_inr(session_response):
-    try:
-        import tls_client
-        token = extract_token(session_response)
-        session = tls_client.Session(client_identifier="chrome_120", random_tls_extension_order=True)
-        proxy_url = "http://te6hoge7zi-country-TH:jCew47u8yHu@global.nullproxies.com:8080"
-        session.proxies = {"http": proxy_url, "https": proxy_url}
-        headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-        
-        # 1. Check Promo
-        promo_id = "plus-1-month-free"
-        try:
-            r_check = session.get('https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27', headers=headers, timeout_seconds=10)
-            if r_check.status_code == 200:
-                accs = r_check.json().get("accounts", {})
-                for a_id, a_info in accs.items():
-                    ps = a_info.get("eligible_promo_campaigns", {})
-                    if "plus" in ps: promo_id = ps["plus"].get("id"); break
-        except: pass
-
-        # 2. Generate Link for India (INR)
-        payload = {
-            "plan_name": "chatgptplusplan", "entry_point": "all_plans_pricing_modal", "checkout_ui_mode": "custom",
-            "billing_details": {"country": "IN", "currency": "INR"},
-            "promo_campaign": {"promo_campaign_id": promo_id, "is_coupon_from_query_param": False}
-        }
-        r = session.post('https://chatgpt.com/backend-api/payments/checkout', headers=headers, json=payload, timeout_seconds=15)
-        
-        if r.status_code == 200:
-            cs_id = r.json().get("checkout_session_id")
-            if cs_id:
-                chat_url = f"https://chatgpt.com/checkout/openai_llc/{cs_id}"
-                return chat_url
-        print(f"Checkout generation API returned status {r.status_code}: {r.text}")
+def automate_checkout_link_selenium(driver, session_response):
+    if not session_response:
+        print("[Billing] Empty session response. Skipping generation.")
         return None
+    try:
+        print("[Billing] Navigating to https://gptcheckout.onrender.com/ to generate secure link...")
+        driver.get("https://gptcheckout.onrender.com/")
+        
+        wait = WebDriverWait(driver, 15)
+        # Wait for the session textarea
+        session_input = wait.until(EC.presence_of_element_located((By.ID, "sessionInput")))
+        
+        # Paste the session JSON instantly using JS
+        driver.execute_script("arguments[0].value = arguments[1];", session_input, session_response)
+        print("[Billing] Pasted ChatGPT session JSON successfully.")
+        
+        # Locate and click the 'Generate Secure Link' button
+        generate_btn = wait.until(EC.element_to_be_clickable((By.ID, "generateBtn")))
+        generate_btn.click()
+        print("[Billing] Clicked 'Generate Secure Link' button.")
+        
+        # Wait for the result input to become visible and populate with a URL
+        result_input = wait.until(EC.presence_of_element_located((By.ID, "resultUrl")))
+        
+        # Poll up to 15 seconds (30 * 0.5s) for the Stripe link to appear
+        stripe_url = ""
+        for _ in range(30):
+            stripe_url = result_input.get_attribute("value")
+            if stripe_url and stripe_url.startswith("http"):
+                break
+            time.sleep(0.5)
+            
+        if stripe_url:
+            print(f"[Billing] Successfully retrieved Stripe checkout URL: {stripe_url}")
+            return stripe_url
+        else:
+            print("[Billing] Failed to fetch generated URL from page result.")
+            return None
     except Exception as e:
-        print(f"Error generating checkout link in thread: {e}")
+        print(f"[Billing] Error during Selenium billing flow: {e}")
         return None
 
 # --- DISCORD BOT SETUP ---
@@ -676,12 +672,12 @@ async def session_command(ctx, *, credentials: str = ""):
                 if session_response:
                     await ctx.send(f"🎉 **[Session Retrieval Successful]** Profile onboarding complete!")
                     
-                    # Generate INR Link directly!
-                    await ctx.send("⏳ **[Billing]** Generating secure ChatGPT Plus **INR** payment checkout link...")
-                    checkout_url = await asyncio.to_thread(generate_checkout_link_inr, session_response)
+                    # Generate INR Link directly via automated UI!
+                    await ctx.send("⏳ **[Billing]** Generating secure ChatGPT Plus **INR** payment checkout link via gptcheckout.onrender.com...")
+                    checkout_url = await asyncio.to_thread(automate_checkout_link_selenium, local_driver, session_response)
                     
                     if checkout_url:
-                        await ctx.send(f"💳 **[INR Payment Link]** Direct Stripe Checkout Ready:\n👉 **{checkout_url}**")
+                        await ctx.send(f"💳 **[INR Payment Link]** Direct Stripe Checkout Ready:\n👉 **<{checkout_url}>**")
                     else:
                         await ctx.send("❌ **[Billing Failed]** Failed to generate INR Stripe checkout URL automatically.")
                     
