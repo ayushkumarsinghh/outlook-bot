@@ -584,6 +584,24 @@ def automate_checkout_link_selenium(driver, session_response):
             
         if stripe_url:
             print(f"[Billing] Successfully retrieved Stripe checkout URL: {stripe_url}")
+            
+            # Click the Copy button instead of Launch Checkout
+            try:
+                print("[Billing] Waiting for Copy button to be clickable...")
+                copy_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@onclick='copyResult()' or @title='Copy']")))
+                copy_btn.click()
+                print("[Billing] Clicked Copy button successfully!")
+                
+                # Accept the "Copied!" alert popup so the browser does not freeze
+                try:
+                    alert = WebDriverWait(driver, 5).until(EC.alert_is_present())
+                    alert.accept()
+                    print("[Billing] Accepted the 'Copied!' browser alert.")
+                except Exception as alert_err:
+                    pass
+            except Exception as click_err:
+                print(f"[Billing] Warning: Could not click Copy button: {click_err}")
+                
             return stripe_url
         else:
             print("[Billing] Failed to fetch generated URL from page result.")
