@@ -550,6 +550,8 @@ def fetch_session_only(driver):
         print(f"Error fetching session for plan check: {e}")
         return None
 
+
+
 # --- DISCORD BOT SETUP ---
 intents = discord.Intents.default()
 intents.message_content = True
