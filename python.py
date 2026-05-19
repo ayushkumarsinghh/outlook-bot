@@ -28,6 +28,19 @@ def fetch_otp_from_outlook(email, password):
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-service-autorun")
+        options.add_argument("--password-store=basic")
+        options.add_argument("--use-gl=swiftshader")
+        # Disable loading of images to save over 60% RAM and CPU usage
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        # Cap Javascript heap memory to 256MB to strictly prevent Railway 512MB Free Tier OOM Crashes
+        options.add_argument("--js-flags=--max-old-space-size=256")
+        
         driver = uc.Chrome(options=options)
     else:
         print("Local Windows machine detected. Starting Chrome in standard GUI mode...")
@@ -188,6 +201,148 @@ def fetch_otp_from_outlook(email, password):
         return None, driver
 
 
+def check_chatgpt_plus_in_outlook(email, password):
+    options = uc.ChromeOptions()
+    options.add_argument("--start-maximized")
+    
+    is_cloud = os.getenv("DOCKER_ENV") == "true" or os.name != 'nt'
+    if is_cloud:
+        print("Cloud server detected. Initializing Headless Chrome options...")
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-default-apps")
+        options.add_argument("--no-first-run")
+        options.add_argument("--no-service-autorun")
+        options.add_argument("--password-store=basic")
+        options.add_argument("--use-gl=swiftshader")
+        options.add_argument("--blink-settings=imagesEnabled=false")
+        options.add_argument("--js-flags=--max-old-space-size=256")
+        driver = uc.Chrome(options=options)
+    else:
+        print("Local Windows machine detected. Starting Chrome in standard GUI mode...")
+        driver = uc.Chrome(options=options, version_main=147)
+        
+    wait = WebDriverWait(driver, 35)
+    
+    try:
+        # Navigate to Outlook login page
+        driver.get(URL)
+        print("Navigated to Outlook URL successfully.")
+        
+        # 1. Enter email
+        email_input = wait.until(EC.element_to_be_clickable((By.ID, "i0116")))
+        email_input.clear()
+        email_input.send_keys(email)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", email_input)
+        
+        next_btn = wait.until(EC.element_to_be_clickable((By.ID, "idSIButton9")))
+        next_btn.click()
+        print("Email submitted.")
+        
+        # 2. Enter password
+        password_input = wait.until(EC.element_to_be_clickable((By.ID, "passwordEntry")))
+        password_input.clear()
+        password_input.send_keys(password)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", password_input)
+        
+        submit_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='primaryButton']")))
+        submit_btn.click()
+        print("Password submitted.")
+        
+        # 3. Handle security / passkey prompts
+        time.sleep(2)
+        for i in range(7):
+            try:
+                cancel_btns = driver.find_elements(By.XPATH, "//button[contains(text(), 'Cancel')] | //input[@id='idCancel'] | //*[@id='idCancel'] | //input[@value='Cancel'] | //*[contains(text(), 'Cancel')]")
+                passkey_header = driver.find_elements(By.XPATH, "//*[contains(text(), 'Setting up your passkey') or contains(text(), 'passkey')]")
+                
+                if cancel_btns and (cancel_btns[0].is_displayed() or (passkey_header and len(passkey_header) > 0)):
+                    cancel_btns[0].click()
+                    time.sleep(3)
+                    continue
+                
+                skip_btns = driver.find_elements(By.ID, "iShowSkip")
+                if skip_btns and skip_btns[0].is_displayed():
+                    skip_btns[0].click()
+                    time.sleep(2)
+                else:
+                    skip_btns_xpath = driver.find_elements(By.XPATH, "//*[contains(@id, 'iShowSkip') or contains(text(), 'Skip for now')]")
+                    if skip_btns_xpath and skip_btns_xpath[0].is_displayed():
+                        skip_btns_xpath[0].click()
+                        time.sleep(2)
+                    else:
+                        break
+            except Exception:
+                break
+                
+        # 4. Handle "Stay signed in"
+        try:
+            no_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='secondaryButton']")))
+            no_btn.click()
+        except Exception:
+            try:
+                no_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'No') or contains(text(), 'no')]")))
+                no_btn.click()
+            except Exception:
+                pass
+                
+        # 5. Search inbox for ChatGPT Plus / Subscription / Invoice keys
+        print("Inbox loaded. Searching for subscription / invoice indicators...")
+        time.sleep(3)
+        
+        search_input = wait.until(EC.element_to_be_clickable((By.ID, "topSearchInput")))
+        search_input.click()
+        search_input.clear()
+        search_input.send_keys("chatgpt plus")
+        search_input.send_keys("\n")
+        print("Searched for 'chatgpt plus'.")
+        time.sleep(4)
+        
+        # Check if matching emails exist
+        items = driver.find_elements(By.CSS_SELECTOR, "div[data-focusable-row='true'][role='option']")
+        if items:
+            for item in items[:5]:
+                text = (item.text or "").lower()
+                aria_label = (item.get_attribute("aria-label") or "").lower()
+                combined_text = text + " " + aria_label
+                
+                # If we find ChatGPT Plus activation or recurring billing confirmation
+                if "chatgpt plus" in combined_text or "subscription" in combined_text or "receipt" in combined_text or "invoice" in combined_text or "payment" in combined_text:
+                    print("✓ ChatGPT Plus subscription indicator found in email subject/preview!")
+                    return "Subscribed", driver
+        
+        # Secondary check: search for "openai" or "stripe" to be completely bulletproof
+        search_input = wait.until(EC.element_to_be_clickable((By.ID, "topSearchInput")))
+        search_input.click()
+        search_input.clear()
+        search_input.send_keys("openai subscription")
+        search_input.send_keys("\n")
+        print("Secondary check: Searched for 'openai subscription'.")
+        time.sleep(4)
+        
+        items = driver.find_elements(By.CSS_SELECTOR, "div[data-focusable-row='true'][role='option']")
+        if items:
+            for item in items[:5]:
+                text = (item.text or "").lower()
+                aria_label = (item.get_attribute("aria-label") or "").lower()
+                combined_text = text + " " + aria_label
+                
+                if "openai" in combined_text and ("subscription" in combined_text or "payment" in combined_text or "receipt" in combined_text or "invoice" in combined_text or "plus" in combined_text):
+                    print("✓ OpenAI subscription indicator found in secondary search!")
+                    return "Subscribed", driver
+                    
+        print("[-] No subscription indicator found.")
+        return "Not Subscribed", driver
+        
+    except Exception as e:
+        print(f"Check execution failed: {e}")
+        return "Error", driver
+
+
 # --- DISCORD BOT SETUP ---
 intents = discord.Intents.default()
 intents.message_content = True
@@ -212,7 +367,7 @@ async def otp_command(ctx, *, credentials: str = ""):
         await ctx.send("⚠️ **Invalid format!** Please use: `!otp email:password`")
         return
         
-    await ctx.send(f"⏳ **[Outlook OTP]** Logging into `{email}` to retrieve your 6-digit verification code...\n*(Running concurrently. Max limit: 3 Chrome instances)*")
+    await ctx.send(f"⏳ **[Outlook OTP]** Logging into `{email}` to retrieve your 6-digit verification code...")
     
     async with bot_semaphore:
         local_driver = None
@@ -236,11 +391,66 @@ async def otp_command(ctx, *, credentials: str = ""):
                 except:
                     pass
 
+# Verification Command: !check
+@bot.command(name="check")
+async def check_command(ctx, *, credentials: str = ""):
+    """Log in to Outlook and check if this account has a ChatGPT Plus subscription email/receipt history"""
+    email, password = parse_credentials(ctx, credentials)
+    if not email or not password:
+        await ctx.send("⚠️ **Invalid format!** Please use: `!check email:password`")
+        return
+        
+    await ctx.send(f"⏳ **[Outlook Check]** Logging into `{email}` to check for ChatGPT Plus subscription history...")
+    
+    async with bot_semaphore:
+        local_driver = None
+        try:
+            status, local_driver = await asyncio.to_thread(check_chatgpt_plus_in_outlook, email, password)
+            
+            if status == "Subscribed":
+                await ctx.send(f"🎉 **[ChatGPT Plus Verified]**\n📧 `{email}` -> **Subscribed (Plus active)**")
+            elif status == "Not Subscribed":
+                await ctx.send(f"❌ **[ChatGPT Plus Verified]**\n📧 `{email}` -> **Not Subscribed**")
+            else:
+                await ctx.send(f"⚠️ **[Check Failed]** Could not determine subscription status cleanly. Please verify credentials manually.")
+        except Exception as err:
+            await ctx.send(f"⚠️ **[Check Error]** An unexpected exception occurred: `{err}`")
+        finally:
+            if local_driver:
+                try:
+                    local_driver.quit()
+                    print("Chrome driver terminated successfully.")
+                except:
+                    pass
+
+def start_health_check_server():
+    import http.server
+    import socketserver
+    import threading
+    
+    port = int(os.getenv("PORT", 8080))
+    class HealthCheckHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"status":"ok"}')
+        def log_message(self, format, *args):
+            pass # Suppress noisy server logs
+            
+    try:
+        server = socketserver.TCPServer(("", port), HealthCheckHandler)
+        print(f"Railway Health Check server started on port {port}")
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    except Exception as e:
+        print(f"Failed to start Railway Health Check server: {e}")
+
 # --- RUN BOT ---
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         print("ERROR: DISCORD_TOKEN is missing! Please set it in your .env file.")
     else:
+        start_health_check_server()
         print("Starting Discord Bot...")
         bot.run(token)
