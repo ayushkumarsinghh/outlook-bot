@@ -635,28 +635,29 @@ async def session_command(ctx, *, credentials: str = ""):
                     await ctx.send(f"🎉 **[Session Retrieval Successful]** Profile onboarding complete!")
                     
                     try:
+                        import io
                         session_data = json.loads(session_response)
+                        access_token = session_data.get("accessToken", "")
                         compact_json = json.dumps(session_data, separators=(',', ':'))
                         
-                        # Direct Copy-friendly single markdown format block
-                        msg = f"📋 **Full ChatGPT Session JSON:**\n```json\n{compact_json}\n```"
+                        # 1. Direct copy-pasteable accessToken block (always fits in 2000 chars)
+                        if access_token:
+                            await ctx.send(f"📋 **Access Token (Direct Copy):**\n```\n{access_token}\n```")
                         
-                        if len(msg) > 2000:
-                            # Send raw text directly inside a code block safely
-                            await ctx.send(f"📋 **Full ChatGPT Session JSON (Unbroken):**")
-                            # If for any reason the compact JSON reaches the upper limit, send it in clean 1900-char text boxes
-                            if len(compact_json) <= 1980:
-                                await ctx.send(f"```json\n{compact_json}\n```")
-                            else:
-                                await ctx.send(f"```json\n{compact_json[:1980]}\n```")
-                        else:
-                            await ctx.send(msg)
+                        # 2. Upload full, unbroken session JSON as a file attachment
+                        file_data = io.BytesIO(compact_json.encode('utf-8'))
+                        await ctx.send(
+                            content="💾 **Full ChatGPT Session JSON File:**",
+                            file=discord.File(fp=file_data, filename="session.json")
+                        )
                     except Exception as json_err:
                         print(f"Error parsing session response: {json_err}")
-                        if len(session_response) <= 1980:
-                            await ctx.send(f"```json\n{session_response}\n```")
-                        else:
-                            await ctx.send(f"```json\n{session_response[:1980]}\n```")
+                        import io
+                        file_data = io.BytesIO(session_response.encode('utf-8'))
+                        await ctx.send(
+                            content="💾 **Raw Session Response File:**",
+                            file=discord.File(fp=file_data, filename="session_raw.json")
+                        )
                             
                     # --- Interactive Hold Block: Wait for user text to close session ---
                     try:
