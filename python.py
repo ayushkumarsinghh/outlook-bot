@@ -501,16 +501,54 @@ def fill_profile_form(driver):
         print("WARNING: Age field was NOT filled!")
     else:
         print(f"✓ Age successfully filled: {random_age}")
-
+        
     print("Looking for submit button...")
+    submit_clicked = False
+    
+    # Fallback 1: Text match
     try:
-        finish_btn = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Finish') or contains(text(), 'Agree') or contains(text(), 'Continue') or contains(text(), 'Finish creating account')]"))
+        finish_btn = WebDriverWait(driver, 8).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Finish') or contains(text(), 'Agree') or contains(text(), 'Continue') or contains(text(), 'Finish creating account') or contains(text(), 'Sign up') or contains(text(), 'Submit') or contains(text(), 'Start')]"))
         )
         finish_btn.click()
-        print("Clicked finish button.")
-    except Exception as e:
-        print(f"Could not click submit: {e}")
+        print("✓ Clicked submit button via text match.")
+        submit_clicked = True
+    except Exception:
+        pass
+
+    # Fallback 2: type='submit' CSS locator
+    if not submit_clicked:
+        try:
+            finish_btn = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']"))
+            )
+            finish_btn.click()
+            print("✓ Clicked submit button via type='submit' CSS selector.")
+            submit_clicked = True
+        except Exception:
+            pass
+
+    # Fallback 3: JS-based force clicker
+    if not submit_clicked:
+        try:
+            res = driver.execute_script("""
+                var btn = document.querySelector('button[type="submit"]') || 
+                          document.querySelector('form button') || 
+                          document.querySelector('button');
+                if (btn) {
+                    btn.click();
+                    return true;
+                }
+                return false;
+            """)
+            if res:
+                print("✓ Clicked submit button via JS fallback.")
+                submit_clicked = True
+        except Exception as e:
+            print(f"JS submit clicker failed: {e}")
+
+    if not submit_clicked:
+        print("WARNING: Could not click submit button through any method!")
 
     print("Waiting 4 seconds for profile creation...")
     time.sleep(4)
@@ -521,7 +559,7 @@ def fill_profile_form(driver):
     time.sleep(3)
     
     try:
-        pre_element = wait.until(EC.presence_of_element_located((By.TAG_NAME, "pre")))
+        pre_element = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.TAG_NAME, "pre")))
         pre_text = pre_element.text
         print("="*50)
         print("Session API Response:")
@@ -531,7 +569,12 @@ def fill_profile_form(driver):
         save_session_to_file(pre_text)
         return pre_text
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"[-] Session JSON not found. Page URL: {driver.current_url} | Title: {driver.title}")
+        try:
+            body_text = driver.find_element(By.TAG_NAME, "body").text[:200]
+            print(f"[-] Page Body Snippet: {body_text}")
+        except:
+            pass
         return None
 
 def fetch_session_only(driver):
