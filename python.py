@@ -11,6 +11,7 @@ import re
 import discord
 from discord.ext import commands
 import asyncio
+import traceback
 
 # --- CONFIG ---
 URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=9199bf20-a13f-4107-85dc-02114787ef48&scope=https%3A%2F%2Foutlook.office.com%2F.default%20openid%20profile%20offline_access&redirect_uri=https%3A%2F%2Foutlook.live.com%2Fmail%2F&client-request-id=85af84fb-4838-c204-f618-76e540231109&response_mode=fragment&client_info=1&prompt=select_account&nonce=019e35f5-4ebc-7f28-8e36-611bb37f46ef&state=eyJpZCI6IjAxOWUzNWY1LTRlYmItNzdmZS04MzkwLTVlMmMzZTFhN2FiMiIsIm1ldGEiOnsiaW50ZXJhY3Rpb25UeXBlIjoicmVkaXJlY3QifX0%3D%7CaHR0cHM6Ly9vdXRsb29rLmxpdmUuY29tL21haWwvP2N1bHR1cmU9ZW4tdXMmY291bnRyeT11cw&claims=%7B%22access_token%22%3A%7B%22xms_cc%22%3A%7B%22values%22%3A%5B%22CP1%22%5D%7D%7D%7D&x-client-SKU=msal.js.browser&x-client-VER=4.28.2&response_type=code&code_challenge=Y-gIvtWec47bQ-tJO49QiNIoRYFseu5HdBprFFN3Af0&code_challenge_method=S256&cobrandid=ab0455a0-8d03-46b9-b18b-df2f57b9e44c&fl=dob,flname,wld&sso_reload=true"
@@ -354,7 +355,8 @@ def run_flow(email, password):
             return False, None
             
         except Exception as e:
-            print("Flow failed:", e)
+            print("Flow failed:")
+            traceback.print_exc()
             try:
                 driver.quit()
             except:
@@ -548,6 +550,52 @@ def fetch_session_only(driver):
         print(f"Error fetching session for plan check: {e}")
         return None
 
+def extract_token(user_input):
+    try:
+        data = json.loads(user_input)
+        if "accessToken" in data: return data["accessToken"]
+    except: pass
+    return user_input.strip()
+
+def generate_checkout_link_inr(session_response):
+    try:
+        import tls_client
+        token = extract_token(session_response)
+        session = tls_client.Session(client_identifier="chrome_120", random_tls_extension_order=True)
+        proxy_url = "http://te6hoge7zi-country-TH:jCew47u8yHu@global.nullproxies.com:8080"
+        session.proxies = {"http": proxy_url, "https": proxy_url}
+        headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+        
+        # 1. Check Promo
+        promo_id = "plus-1-month-free"
+        try:
+            r_check = session.get('https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27', headers=headers, timeout_seconds=10)
+            if r_check.status_code == 200:
+                accs = r_check.json().get("accounts", {})
+                for a_id, a_info in accs.items():
+                    ps = a_info.get("eligible_promo_campaigns", {})
+                    if "plus" in ps: promo_id = ps["plus"].get("id"); break
+        except: pass
+
+        # 2. Generate Link for India (INR)
+        payload = {
+            "plan_name": "chatgptplusplan", "entry_point": "all_plans_pricing_modal", "checkout_ui_mode": "custom",
+            "billing_details": {"country": "IN", "currency": "INR"},
+            "promo_campaign": {"promo_campaign_id": promo_id, "is_coupon_from_query_param": False}
+        }
+        r = session.post('https://chatgpt.com/backend-api/payments/checkout', headers=headers, json=payload, timeout_seconds=15)
+        
+        if r.status_code == 200:
+            cs_id = r.json().get("checkout_session_id")
+            if cs_id:
+                chat_url = f"https://chatgpt.com/checkout/openai_llc/{cs_id}"
+                return chat_url
+        print(f"Checkout generation API returned status {r.status_code}: {r.text}")
+        return None
+    except Exception as e:
+        print(f"Error generating checkout link in thread: {e}")
+        return None
+
 # --- DISCORD BOT SETUP ---
 intents = discord.Intents.default()
 intents.message_content = True
@@ -627,6 +675,15 @@ async def session_command(ctx, *, credentials: str = ""):
                 
                 if session_response:
                     await ctx.send(f"🎉 **[Session Retrieval Successful]** Profile onboarding complete!")
+                    
+                    # Generate INR Link directly!
+                    await ctx.send("⏳ **[Billing]** Generating secure ChatGPT Plus **INR** payment checkout link...")
+                    checkout_url = await asyncio.to_thread(generate_checkout_link_inr, session_response)
+                    
+                    if checkout_url:
+                        await ctx.send(f"💳 **[INR Payment Link]** Direct Stripe Checkout Ready:\n👉 **{checkout_url}**")
+                    else:
+                        await ctx.send("❌ **[Billing Failed]** Failed to generate INR Stripe checkout URL automatically.")
                     
                     try:
                         session_data = json.loads(session_response)
