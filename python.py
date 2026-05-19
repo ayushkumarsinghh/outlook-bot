@@ -660,14 +660,17 @@ async def session_command(ctx, *, credentials: str = ""):
                             
                     # --- Interactive Hold Block: Wait for user text to close session ---
                     try:
-                        await ctx.send("🟢 **[Session Hold]** Browser session is active. **Send any message next in this channel** to close the browser and terminate the session.")
+                        await ctx.send("🟢 **[Session Hold]** Browser session is active. **To close the browser and terminate the session, type `ok` next in this channel**.")
+                        
                         def check_msg(m):
-                            return m.author == ctx.author and m.channel == ctx.channel
-                        # Wait for any message from this user to terminate (up to 10 minutes)
-                        await bot.wait_for('message', check=check_msg, timeout=600.0)
-                        await ctx.send("🛑 **[Session Terminated]** Message received. Terminating Chrome and cleaning up processes...")
+                            # Ensure the termination message comes from the same author, in the same channel, and says "ok" exactly
+                            return m.author == ctx.author and m.channel == ctx.channel and m.content.strip().lower() == "ok"
+                            
+                        # Wait for the "ok" message to terminate (up to 15 minutes)
+                        await bot.wait_for('message', check=check_msg, timeout=900.0)
+                        await ctx.send("🛑 **[Session Terminated]** 'ok' received. Terminating Chrome and cleaning up processes...")
                     except asyncio.TimeoutError:
-                        await ctx.send("⏰ **[Timeout]** No message received within 10 minutes. Automatically terminating Chrome processes...")
+                        await ctx.send("⏰ **[Timeout]** No 'ok' message received within 15 minutes. Automatically terminating Chrome processes...")
                 else:
                     await ctx.send(f"⚠️ Registration completed, but failed to fetch session details from `{CHATGPT_SESSION_URL}`.")
             else:
