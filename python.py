@@ -358,6 +358,15 @@ def parse_credentials(ctx, user_input):
     email, password = user_input.split(":", 1)
     return email.strip(), password.strip()
 
+def parse_multiple_credentials(user_input):
+    parts = user_input.strip().split()
+    accounts = []
+    for p in parts:
+        if ":" in p:
+            email, password = p.split(":", 1)
+            accounts.append((email.strip(), password.strip()))
+    return accounts
+
 # Primary Command: !otp
 @bot.command(name="otp")
 async def otp_command(ctx, *, credentials: str = ""):
@@ -376,9 +385,10 @@ async def otp_command(ctx, *, credentials: str = ""):
             otp_code, local_driver = await asyncio.to_thread(fetch_otp_from_outlook, email, password)
             
             if otp_code:
-                # Output OTP code in direct copy block and clean text
+                # Output OTP code in a separate single backtick line for seamless one-tap copying
                 await ctx.send(f"🎉 **[OTP Retrieval Successful]**")
-                await ctx.send(f"🔑 **Verification Code:**\n```\n{otp_code}\n```")
+                await ctx.send(f"🔑 **Verification Code (Tap to copy):**")
+                await ctx.send(f"`{otp_code}`")
             else:
                 await ctx.send(f"❌ **[OTP Retrieval Failed]** Could not find a ChatGPT verification code in the last 2 minutes. Please trigger 'Send code' in your browser and try again.")
         except Exception as err:
@@ -391,37 +401,88 @@ async def otp_command(ctx, *, credentials: str = ""):
                 except:
                     pass
 
-# Verification Command: !check
+# Verification Command: !check (Supports Multi-Account Checks)
 @bot.command(name="check")
 async def check_command(ctx, *, credentials: str = ""):
-    """Log in to Outlook and check if this account has a ChatGPT Plus subscription email/receipt history"""
-    email, password = parse_credentials(ctx, credentials)
-    if not email or not password:
-        await ctx.send("⚠️ **Invalid format!** Please use: `!check email:password`")
+    """Log in to Outlook and check one or multiple accounts for ChatGPT Plus subscription history"""
+    accounts = parse_multiple_credentials(credentials)
+    if not accounts:
+        await ctx.send("⚠️ **Invalid format!** Please use: `!check email:password` (or list multiple separated by spaces/newlines).")
         return
         
-    await ctx.send(f"⏳ **[Outlook Check]** Logging into `{email}` to check for ChatGPT Plus subscription history...")
+    total = len(accounts)
+    status_msg = await ctx.send(f"⏳ **[Outlook Check]** Starting subscription check for **{total}** account(s)...")
     
-    async with bot_semaphore:
-        local_driver = None
-        try:
-            status, local_driver = await asyncio.to_thread(check_chatgpt_plus_in_outlook, email, password)
+    subscribed_list = []
+    not_subscribed_list = []
+    failed_list = []
+    
+    for index, (email, password) in enumerate(accounts, 1):
+        await status_msg.edit(content=f"⏳ **[Outlook Check]** Processing account **{index}/{total}**: `{email}`...")
+        
+        async with bot_semaphore:
+            local_driver = None
+            try:
+                status, local_driver = await asyncio.to_thread(check_chatgpt_plus_in_outlook, email, password)
+                
+                if status == "Subscribed":
+                    subscribed_list.append(email)
+                elif status == "Not Subscribed":
+                    not_subscribed_list.append(email)
+                else:
+                    failed_list.append(email)
+            except Exception as err:
+                print(f"Error checking {email}: {err}")
+                failed_list.append(email)
+            finally:
+                if local_driver:
+                    try:
+                        local_driver.quit()
+                        print(f"Chrome driver for {email} terminated.")
+                    except:
+                        pass
+                        
+    # Build a consolidated final summary report
+    report = []
+    report.append("📋 **ChatGPT Plus Verification Summary Report:**")
+    report.append("="*45)
+    
+    if subscribed_list:
+        report.append(f"🎉 **Subscribed (Plus active) [{len(subscribed_list)}]:**")
+        for email in subscribed_list:
+            report.append(f"• `{email}`")
             
-            if status == "Subscribed":
-                await ctx.send(f"🎉 **[ChatGPT Plus Verified]**\n📧 `{email}` -> **Subscribed (Plus active)**")
-            elif status == "Not Subscribed":
-                await ctx.send(f"❌ **[ChatGPT Plus Verified]**\n📧 `{email}` -> **Not Subscribed**")
-            else:
-                await ctx.send(f"⚠️ **[Check Failed]** Could not determine subscription status cleanly. Please verify credentials manually.")
-        except Exception as err:
-            await ctx.send(f"⚠️ **[Check Error]** An unexpected exception occurred: `{err}`")
-        finally:
-            if local_driver:
-                try:
-                    local_driver.quit()
-                    print("Chrome driver terminated successfully.")
-                except:
-                    pass
+    if not_subscribed_list:
+        if len(report) > 2:
+            report.append("")  # Spacer
+        report.append(f"❌ **Not Subscribed [{len(not_subscribed_list)}]:**")
+        for email in not_subscribed_list:
+            report.append(f"• `{email}`")
+            
+    if failed_list:
+        if len(report) > 2:
+            report.append("")  # Spacer
+        report.append(f"⚠️ **Check Failed / Errors [{len(failed_list)}]:**")
+        for email in failed_list:
+            report.append(f"• `{email}`")
+            
+    report.append("="*45)
+    report.append("✓ *All checks complete.*")
+    
+    final_report_text = "\n".join(report)
+    
+    # Send report (split/file attachment handling for very long bulk checks)
+    if len(final_report_text) > 2000:
+        import io
+        file_data = io.BytesIO(final_report_text.encode('utf-8'))
+        await ctx.send("📋 **Summary Report (Attached due to length limit):**", file=discord.File(file_data, "check_report.txt"))
+    else:
+        await ctx.send(final_report_text)
+        
+    try:
+        await status_msg.delete()
+    except:
+        pass
 
 def start_health_check_server():
     import http.server
