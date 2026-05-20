@@ -436,7 +436,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
-def on_ready():
+async def on_ready():
     print(f"🤖 Bot is logged in and ready as: {bot.user}")
 
 def parse_credentials(ctx, user_input):
