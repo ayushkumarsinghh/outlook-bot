@@ -2,6 +2,7 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
 import time
 import random
 import string
@@ -67,15 +68,63 @@ def get_chrome_options():
         options.add_argument("--js-flags=--max-old-space-size=256")
     return options
 
+def create_driver(options):
+    is_cloud = os.getenv("DOCKER_ENV") == "true" or os.name != 'nt'
+    if is_cloud:
+        print("Running in cloud/headless environment. Initializing Chrome driver...")
+        return uc.Chrome(options=options)
+    
+    # On Windows, try auto-detection first
+    try:
+        print("Initializing Chrome driver (auto-detect version)...")
+        return uc.Chrome(options=options)
+    except Exception as e:
+        print(f"Auto-detect failed: {e}. Trying dynamically resolved version...")
+        
+    # Get dynamic Chrome version via registry
+    major_version = None
+    try:
+        import winreg
+        reg_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon")
+        version, _ = winreg.QueryValueEx(reg_key, "version")
+        winreg.CloseKey(reg_key)
+        major_version = int(version.split(".")[0])
+        print(f"Detected Chrome major version: {major_version} (HKCU)")
+    except Exception:
+        try:
+            import winreg
+            reg_key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Google\Chrome\BLBeacon")
+            version, _ = winreg.QueryValueEx(reg_key, "version")
+            winreg.CloseKey(reg_key)
+            major_version = int(version.split(".")[0])
+            print(f"Detected Chrome major version: {major_version} (HKLM)")
+        except Exception:
+            pass
+
+    if major_version:
+        try:
+            print(f"Initializing Chrome driver with version_main={major_version}...")
+            return uc.Chrome(options=options, version_main=major_version)
+        except Exception as e:
+            print(f"Failed with version_main={major_version}: {e}")
+
+    # Fallback to common versions
+    for ver in [148, 147]:
+        try:
+            print(f"Initializing Chrome driver with version_main={ver}...")
+            return uc.Chrome(options=options, version_main=ver)
+        except Exception:
+            pass
+
+    # If all else fails, try one last time with no arguments to let the error propagate
+    print("All Chrome driver initialization attempts failed. Trying final fallback...")
+    return uc.Chrome(options=options)
+
 # --- SELENIUM WORKERS ---
 
 def fetch_otp_from_outlook(email, password):
     options = get_chrome_options()
-    is_cloud = os.getenv("DOCKER_ENV") == "true" or os.name != 'nt'
-    if is_cloud:
-        driver = uc.Chrome(options=options)
-    else:
-        driver = uc.Chrome(options=options, version_main=147)
+    driver = create_driver(options)
         
     wait = WebDriverWait(driver, 35)
     
@@ -96,25 +145,37 @@ def fetch_otp_from_outlook(email, password):
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='primaryButton']"))).click()
         
         time.sleep(2)
-        for i in range(5):
+        for i in range(7):
             try:
-                cancel_btns = driver.find_elements(By.XPATH, "//button[contains(text(), 'Cancel')] | //input[@id='idCancel'] | //*[@id='idCancel']")
-                if cancel_btns:
+                cancel_btns = driver.find_elements(By.XPATH, "//button[contains(text(), 'Cancel')] | //input[@id='idCancel'] | //*[@id='idCancel'] | //input[@value='Cancel'] | //*[contains(text(), 'Cancel')]")
+                passkey_header = driver.find_elements(By.XPATH, "//*[contains(text(), 'Setting up your passkey') or contains(text(), 'passkey')]")
+                if cancel_btns and (cancel_btns[0].is_displayed() or (passkey_header and len(passkey_header) > 0)):
                     cancel_btns[0].click()
-                    time.sleep(2)
+                    time.sleep(3)
                     continue
+                
                 skip_btns = driver.find_elements(By.ID, "iShowSkip")
                 if skip_btns and skip_btns[0].is_displayed():
                     skip_btns[0].click()
-                    time.sleep(2)
+                    time.sleep(3)
                 else:
-                    break
+                    skip_btns_xpath = driver.find_elements(By.XPATH, "//*[contains(@id, 'iShowSkip') or contains(text(), 'Skip for now')]")
+                    if skip_btns_xpath and skip_btns_xpath[0].is_displayed():
+                        skip_btns_xpath[0].click()
+                        time.sleep(3)
+                    else:
+                        break
             except:
                 break
                 
+        # Try to bypass "Stay signed in?" screen or other intermediate pages
         try:
-            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='secondaryButton']"))).click()
-        except:
+            stay_signed_no = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//input[@id='idBtn_Back'] | //button[@data-testid='secondaryButton'] | //button[contains(text(), 'No')] | //input[@value='No']"))
+            )
+            stay_signed_no.click()
+            print("Successfully bypassed 'Stay signed in?' screen.")
+        except Exception:
             pass
             
         print("Outlook logged in. Scanning for ChatGPT verification code...")
@@ -127,7 +188,8 @@ def fetch_otp_from_outlook(email, password):
             try:
                 search_input = wait.until(EC.element_to_be_clickable((By.ID, "topSearchInput")))
                 search_input.click()
-                search_input.clear()
+                search_input.send_keys(Keys.CONTROL + "a")
+                search_input.send_keys(Keys.BACKSPACE)
                 search_input.send_keys("chatgpt code")
                 search_input.send_keys("\n")
                 time.sleep(3)
@@ -180,11 +242,7 @@ def fetch_otp_from_outlook(email, password):
 
 def check_chatgpt_plus_in_outlook(email, password):
     options = get_chrome_options()
-    is_cloud = os.getenv("DOCKER_ENV") == "true" or os.name != 'nt'
-    if is_cloud:
-        driver = uc.Chrome(options=options)
-    else:
-        driver = uc.Chrome(options=options, version_main=147)
+    driver = create_driver(options)
         
     wait = WebDriverWait(driver, 35)
     
@@ -204,25 +262,37 @@ def check_chatgpt_plus_in_outlook(email, password):
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='primaryButton']"))).click()
         
         time.sleep(2)
-        for i in range(5):
+        for i in range(7):
             try:
-                cancel_btns = driver.find_elements(By.XPATH, "//button[contains(text(), 'Cancel')] | //input[@id='idCancel'] | //*[@id='idCancel']")
-                if cancel_btns:
+                cancel_btns = driver.find_elements(By.XPATH, "//button[contains(text(), 'Cancel')] | //input[@id='idCancel'] | //*[@id='idCancel'] | //input[@value='Cancel'] | //*[contains(text(), 'Cancel')]")
+                passkey_header = driver.find_elements(By.XPATH, "//*[contains(text(), 'Setting up your passkey') or contains(text(), 'passkey')]")
+                if cancel_btns and (cancel_btns[0].is_displayed() or (passkey_header and len(passkey_header) > 0)):
                     cancel_btns[0].click()
-                    time.sleep(2)
+                    time.sleep(3)
                     continue
+                
                 skip_btns = driver.find_elements(By.ID, "iShowSkip")
                 if skip_btns and skip_btns[0].is_displayed():
                     skip_btns[0].click()
-                    time.sleep(2)
+                    time.sleep(3)
                 else:
-                    break
+                    skip_btns_xpath = driver.find_elements(By.XPATH, "//*[contains(@id, 'iShowSkip') or contains(text(), 'Skip for now')]")
+                    if skip_btns_xpath and skip_btns_xpath[0].is_displayed():
+                        skip_btns_xpath[0].click()
+                        time.sleep(3)
+                    else:
+                        break
             except:
                 break
                 
+        # Try to bypass "Stay signed in?" screen or other intermediate pages
         try:
-            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='secondaryButton']"))).click()
-        except:
+            stay_signed_no = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//input[@id='idBtn_Back'] | //button[@data-testid='secondaryButton'] | //button[contains(text(), 'No')] | //input[@value='No']"))
+            )
+            stay_signed_no.click()
+            print("Successfully bypassed 'Stay signed in?' screen.")
+        except Exception:
             pass
             
         print("Outlook logged in. Searching for subscription / invoice keywords...")
@@ -230,14 +300,15 @@ def check_chatgpt_plus_in_outlook(email, password):
         
         search_input = wait.until(EC.element_to_be_clickable((By.ID, "topSearchInput")))
         search_input.click()
-        search_input.clear()
+        search_input.send_keys(Keys.CONTROL + "a")
+        search_input.send_keys(Keys.BACKSPACE)
         search_input.send_keys("chatgpt plus")
         search_input.send_keys("\n")
         time.sleep(4)
         
         items = driver.find_elements(By.CSS_SELECTOR, "div[data-focusable-row='true'][role='option']")
         if items:
-            for item in items[:5]:
+            for item in items[:10]:
                 text = (item.text or "").lower()
                 aria_label = (item.get_attribute("aria-label") or "").lower()
                 combined_text = text + " " + aria_label
@@ -247,14 +318,15 @@ def check_chatgpt_plus_in_outlook(email, password):
         # Secondary check
         search_input = wait.until(EC.element_to_be_clickable((By.ID, "topSearchInput")))
         search_input.click()
-        search_input.clear()
+        search_input.send_keys(Keys.CONTROL + "a")
+        search_input.send_keys(Keys.BACKSPACE)
         search_input.send_keys("openai subscription")
         search_input.send_keys("\n")
         time.sleep(4)
         
         items = driver.find_elements(By.CSS_SELECTOR, "div[data-focusable-row='true'][role='option']")
         if items:
-            for item in items[:5]:
+            for item in items[:10]:
                 text = (item.text or "").lower()
                 aria_label = (item.get_attribute("aria-label") or "").lower()
                 combined_text = text + " " + aria_label
@@ -269,11 +341,7 @@ def check_chatgpt_plus_in_outlook(email, password):
 
 def run_full_access_token_flow(email, password):
     options = get_chrome_options()
-    is_cloud = os.getenv("DOCKER_ENV") == "true" or os.name != 'nt'
-    if is_cloud:
-        driver = uc.Chrome(options=options)
-    else:
-        driver = uc.Chrome(options=options, version_main=147)
+    driver = create_driver(options)
         
     wait = WebDriverWait(driver, 35)
     
@@ -295,25 +363,37 @@ def run_full_access_token_flow(email, password):
         wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='primaryButton']"))).click()
         
         time.sleep(2)
-        for i in range(5):
+        for i in range(7):
             try:
-                cancel_btns = driver.find_elements(By.XPATH, "//button[contains(text(), 'Cancel')] | //input[@id='idCancel'] | //*[@id='idCancel']")
-                if cancel_btns:
+                cancel_btns = driver.find_elements(By.XPATH, "//button[contains(text(), 'Cancel')] | //input[@id='idCancel'] | //*[@id='idCancel'] | //input[@value='Cancel'] | //*[contains(text(), 'Cancel')]")
+                passkey_header = driver.find_elements(By.XPATH, "//*[contains(text(), 'Setting up your passkey') or contains(text(), 'passkey')]")
+                if cancel_btns and (cancel_btns[0].is_displayed() or (passkey_header and len(passkey_header) > 0)):
                     cancel_btns[0].click()
-                    time.sleep(2)
+                    time.sleep(3)
                     continue
+                
                 skip_btns = driver.find_elements(By.ID, "iShowSkip")
                 if skip_btns and skip_btns[0].is_displayed():
                     skip_btns[0].click()
-                    time.sleep(2)
+                    time.sleep(3)
                 else:
-                    break
+                    skip_btns_xpath = driver.find_elements(By.XPATH, "//*[contains(@id, 'iShowSkip') or contains(text(), 'Skip for now')]")
+                    if skip_btns_xpath and skip_btns_xpath[0].is_displayed():
+                        skip_btns_xpath[0].click()
+                        time.sleep(3)
+                    else:
+                        break
             except:
                 break
                 
+        # Try to bypass "Stay signed in?" screen or other intermediate pages
         try:
-            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='secondaryButton']"))).click()
-        except:
+            stay_signed_no = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//input[@id='idBtn_Back'] | //button[@data-testid='secondaryButton'] | //button[contains(text(), 'No')] | //input[@value='No']"))
+            )
+            stay_signed_no.click()
+            print("Successfully bypassed 'Stay signed in?' screen.")
+        except Exception:
             pass
             
         # 2. Open ChatGPT and start login
@@ -340,7 +420,8 @@ def run_full_access_token_flow(email, password):
             try:
                 search_input = wait.until(EC.element_to_be_clickable((By.ID, "topSearchInput")))
                 search_input.click()
-                search_input.clear()
+                search_input.send_keys(Keys.CONTROL + "a")
+                search_input.send_keys(Keys.BACKSPACE)
                 search_input.send_keys("chatgpt code")
                 search_input.send_keys("\n")
                 time.sleep(3)
