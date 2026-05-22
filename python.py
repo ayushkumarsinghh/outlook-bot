@@ -68,11 +68,12 @@ def get_chrome_options():
         options.add_argument("--js-flags=--max-old-space-size=256")
     return options
 
-def create_driver(options):
+def create_driver(options=None):
     # Try auto-detect first
     try:
         print("Initializing Chrome driver (auto-detect)...")
-        return uc.Chrome(options=options)
+        fresh_options = get_chrome_options()
+        return uc.Chrome(options=fresh_options)
     except Exception as e:
         err_msg = str(e)
         print(f"Auto-detect failed: {err_msg}")
@@ -84,7 +85,8 @@ def create_driver(options):
             detected_ver = int(match.group(1))
             print(f"Self-Healing: Detected Chrome version {detected_ver} from error. Retrying...")
             try:
-                return uc.Chrome(options=options, version_main=detected_ver)
+                retry_options = get_chrome_options()
+                return uc.Chrome(options=retry_options, version_main=detected_ver)
             except Exception as retry_err:
                 print(f"Self-Healing retry failed for version {detected_ver}: {retry_err}")
 
@@ -112,7 +114,8 @@ def create_driver(options):
             if major_version:
                 try:
                     print(f"Initializing Chrome driver with version_main={major_version}...")
-                    return uc.Chrome(options=options, version_main=major_version)
+                    reg_options = get_chrome_options()
+                    return uc.Chrome(options=reg_options, version_main=major_version)
                 except Exception as reg_err:
                     print(f"Failed with version_main={major_version}: {reg_err}")
 
@@ -120,13 +123,15 @@ def create_driver(options):
         for ver in [148, 147, 149]:
             try:
                 print(f"Initializing Chrome driver with fallback version_main={ver}...")
-                return uc.Chrome(options=options, version_main=ver)
+                fallback_options = get_chrome_options()
+                return uc.Chrome(options=fallback_options, version_main=ver)
             except Exception:
                 pass
 
         # If all else fails, try one last time to let the error propagate
         print("All Chrome driver initialization attempts failed. Trying final fallback...")
-        return uc.Chrome(options=options)
+        final_options = get_chrome_options()
+        return uc.Chrome(options=final_options)
 
 # --- SELENIUM WORKERS ---
 
