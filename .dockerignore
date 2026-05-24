@@ -8,7 +8,6 @@ __pycache__/
 chatgpt_session.txt
 spotify_links.txt
 py1.py
-py2.py
 chromedriver.log
 geckodriver.log
 ghostdriver.log
