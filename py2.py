@@ -22,7 +22,11 @@ import urllib.request
 # --- CONFIG ---
 URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=9199bf20-a13f-4107-85dc-02114787ef48&scope=https%3A%2F%2Foutlook.office.com%2F.default%20openid%20profile%20offline_access&redirect_uri=https%3A%2F%2Foutlook.live.com%2Fmail%2F&client-request-id=85af84fb-4838-c204-f618-76e540231109&response_mode=fragment&client_info=1&prompt=select_account&nonce=019e35f5-4ebc-7f28-8e36-611bb37f46ef&state=eyJpZCI6IjAxOWUzNWY1LTRlYmItNzdmZS04MzkwLTVlMmMzZTFhN2FiMiIsIm1ldGEiOnsiaW50ZXJhY3Rpb25UeXBlIjoicmVkaXJlY3QifX0%3D%7CaHR0cHM6Ly9vdXRsb29rLmxpdmUuY29tL21haWwvP2N1bHR1cmU9ZW4tdXMmY291bnRyeT11Uw&claims=%7B%22access_token%22%3A%7B%22xms_cc%22%3A%7B%22values%22%3A%5B%22CP1%22%5D%7D%7D%7D&x-client-SKU=msal.js.browser&x-client-VER=4.28.2&response_type=code&code_challenge=Y-gIvtWec47bQ-tJO49QiNIoRYFseu5HdBprFFN3Af0&code_challenge_method=S256&cobrandid=ab0455a0-8d03-46b9-b18b-df2f57b9e44c&fl=dob,flname,wld&sso_reload=true"
 
-bot_semaphore = asyncio.Semaphore(1)
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_CHECKS", "2"))
+bot_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+active_checks = 0
+active_checks_lock = threading.Lock()
 
 # --- ACCESS CONTROL SYSTEM ---
 OWNER_ID = 1074981715971428432
@@ -84,8 +88,8 @@ def cleanup_chrome_processes():
     is_cloud = os.getenv("DOCKER_ENV") == "true" or os.name != 'nt'
     if is_cloud:
         try:
-            # Force kill any dangling or zombie chromium processes owned by the user
-            print("[System] Performing aggressive Chrome process cleanup...")
+            # Force kill any dangling or zombie chromium processes owned by the user when idle
+            print("[System] All active checking sessions complete. Performing aggressive Chrome cleanup...")
             os.system("pkill -9 -f chromium || true")
             os.system("pkill -9 -f chrome || true")
             os.system("pkill -9 -f chromedriver || true")
@@ -380,6 +384,11 @@ async def check_command(ctx, *, credentials: str = ""):
         await status_msg.edit(content=f"⏳ **[Outlook Check]** Processing account **{index}/{total}**: `{email}`...")
         
         async with bot_semaphore:
+            # Increment active checking counter
+            with active_checks_lock:
+                global active_checks
+                active_checks += 1
+                
             local_driver = None
             try:
                 status, local_driver = await asyncio.to_thread(check_chatgpt_plus_in_outlook, email, password)
@@ -400,7 +409,18 @@ async def check_command(ctx, *, credentials: str = ""):
                         local_driver.quit()
                     except:
                         pass
-                cleanup_chrome_processes()
+                
+                # Decrement active checking counter and read idle state
+                with active_checks_lock:
+                    active_checks -= 1
+                    is_idle = (active_checks == 0)
+                
+                # Perform basic heap garbage collection
+                gc.collect()
+                
+                # Run aggressive process sweeping only when all checking threads are idle
+                if is_idle:
+                    cleanup_chrome_processes()
                         
     report = []
     report.append("📋 **ChatGPT Plus Verification Summary Report:**")
