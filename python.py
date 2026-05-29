@@ -13,17 +13,12 @@ import discord
 from discord.ext import commands
 import asyncio
 import traceback
-import http.server
-import socketserver
 import threading
-import ssl
-import urllib.request
 
 # --- CONFIG ---
 URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=9199bf20-a13f-4107-85dc-02114787ef48&scope=https%3A%2F%2Foutlook.office.com%2F.default%20openid%20profile%20offline_access&redirect_uri=https%3A%2F%2Foutlook.live.com%2Fmail%2F&client-request-id=85af84fb-4838-c204-f618-76e540231109&response_mode=fragment&client_info=1&prompt=select_account&nonce=019e35f5-4ebc-7f28-8e36-611bb37f46ef&state=eyJpZCI6IjAxOWUzNWY1LTRlYmItNzdmZS04MzkwLTVlMmMzZTFhN2FiMiIsIm1ldGEiOnsiaW50ZXJhY3Rpb25UeXBlIjoicmVkaXJlY3QifX0%3D%7CaHR0cHM6Ly9vdXRsb29rLmxpdmUuY29tL21haWwvP2N1bHR1cmU9ZW4tdXMmY291bnRyeT11Uw&claims=%7B%22access_token%22%3A%7B%22xms_cc%22%3A%7B%22values%22%3A%5B%22CP1%22%5D%7D%7D%7D&x-client-SKU=msal.js.browser&x-client-VER=4.28.2&response_type=code&code_challenge=Y-gIvtWec47bQ-tJO49QiNIoRYFseu5HdBprFFN3Af0&code_challenge_method=S256&cobrandid=ab0455a0-8d03-46b9-b18b-df2f57b9e44c&fl=dob,flname,wld&sso_reload=true"
 
-MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_CHECKS", "2"))
-bot_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+bot_semaphore = asyncio.Semaphore(3)
 
 active_checks = 0
 active_checks_lock = threading.Lock()
@@ -84,7 +79,7 @@ import gc
 def cleanup_chrome_processes():
     # Force Python to release memory immediately
     gc.collect()
-    
+
     is_cloud = os.getenv("DOCKER_ENV") == "true" or os.name != 'nt'
     if is_cloud:
         try:
@@ -107,6 +102,7 @@ def create_driver(options=None):
         print(f"Auto-detect failed: {err_msg}")
         
         # Self-healing: Parse the version from the error message if possible
+        # e.g., "Current browser version is 148.0.7778.178"
         match = re.search(r"Current browser version is (\d+)", err_msg)
         if match:
             detected_ver = int(match.group(1))
@@ -160,7 +156,125 @@ def create_driver(options=None):
         final_options = get_chrome_options()
         return uc.Chrome(options=final_options)
 
-# --- SELENIUM WORKER ---
+# --- SELENIUM WORKERS ---
+
+def fetch_otp_from_outlook(email, password):
+    options = get_chrome_options()
+    driver = create_driver(options)
+        
+    wait = WebDriverWait(driver, 35)
+    
+    try:
+        driver.get(URL)
+        print("Navigated to Outlook login page.")
+        
+        email_input = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@id='i0116'] | //input[@name='loginfmt'] | //input[@type='email']")))
+        email_input.clear()
+        email_input.send_keys(email)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", email_input)
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@id='idSIButton9'] | //input[@type='submit'] | //button[@type='submit']"))).click()
+        
+        password_input = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@id='passwordEntry'] | //input[@id='i0118'] | //input[@name='passwd'] | //input[@type='password']")))
+        password_input.clear()
+        password_input.send_keys(password)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", password_input)
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@data-testid='primaryButton'] | //input[@id='idSIButton9'] | //input[@type='submit'] | //button[@type='submit']"))).click()
+        
+        time.sleep(2)
+        for i in range(7):
+            try:
+                cancel_btns = driver.find_elements(By.XPATH, "//button[contains(text(), 'Cancel')] | //input[@id='idCancel'] | //*[@id='idCancel'] | //input[@value='Cancel'] | //*[contains(text(), 'Cancel')]")
+                passkey_header = driver.find_elements(By.XPATH, "//*[contains(text(), 'Setting up your passkey') or contains(text(), 'passkey')]")
+                if cancel_btns and (cancel_btns[0].is_displayed() or (passkey_header and len(passkey_header) > 0)):
+                    cancel_btns[0].click()
+                    time.sleep(3)
+                    continue
+                
+                skip_btns = driver.find_elements(By.ID, "iShowSkip")
+                if skip_btns and skip_btns[0].is_displayed():
+                    skip_btns[0].click()
+                    time.sleep(3)
+                else:
+                    skip_btns_xpath = driver.find_elements(By.XPATH, "//*[contains(@id, 'iShowSkip') or contains(text(), 'Skip for now')]")
+                    if skip_btns_xpath and skip_btns_xpath[0].is_displayed():
+                        skip_btns_xpath[0].click()
+                        time.sleep(3)
+                    else:
+                        break
+            except:
+                break
+                
+        # Try to bypass "Stay signed in?" screen or other intermediate pages
+        try:
+            stay_signed_no = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, "//input[@id='idBtn_Back'] | //button[@data-testid='secondaryButton'] | //button[contains(text(), 'No')] | //input[@value='No']"))
+            )
+            stay_signed_no.click()
+            print("Successfully bypassed 'Stay signed in?' screen.")
+        except Exception:
+            pass
+            
+        print("Outlook logged in. Scanning for ChatGPT verification code...")
+        time.sleep(3)
+        
+        start_time = time.time()
+        extracted_otp = None
+        
+        while time.time() - start_time < 120:
+            try:
+                search_input = wait.until(EC.element_to_be_clickable((By.ID, "topSearchInput")))
+                search_input.click()
+                search_input.send_keys(Keys.CONTROL + "a")
+                search_input.send_keys(Keys.BACKSPACE)
+                search_input.send_keys("chatgpt code")
+                search_input.send_keys("\n")
+                time.sleep(3)
+                
+                items = driver.find_elements(By.CSS_SELECTOR, "div[data-focusable-row='true'][role='option']")
+                if items:
+                    for item in items[:3]:
+                        text = item.text or ""
+                        aria_label = item.get_attribute("aria-label") or ""
+                        combined_text = (text + " " + aria_label).lower()
+                        
+                        if "chatgpt" in combined_text or "openai" in combined_text or "verification" in combined_text:
+                            match = re.search(r'\b\d{6}\b', combined_text)
+                            if match:
+                                extracted_otp = match.group(0)
+                                return extracted_otp, driver
+                                
+                            item.click()
+                            time.sleep(3)
+                            
+                            try:
+                                elements = driver.find_elements(By.XPATH, "//*[contains(@style, 'Menlo') or contains(@style, 'Monaco') or contains(@style, 'F3F3F3')]")
+                                for elem in elements:
+                                    val = elem.text.strip()
+                                    if len(val) == 6 and val.isdigit():
+                                        return val, driver
+                            except:
+                                pass
+                            
+                            try:
+                                body_text = driver.find_element(By.TAG_NAME, "body").text
+                                match = re.search(r'(?:code|continue|verification):\s*(\d{6})', body_text, re.IGNORECASE)
+                                if match:
+                                    return match.group(1), driver
+                                else:
+                                    matches = re.findall(r'\b\d{6}\b', body_text)
+                                    if matches:
+                                        return matches[0], driver
+                            except:
+                                pass
+            except:
+                pass
+            time.sleep(5)
+            
+        return None, driver
+    except Exception as e:
+        print(f"OTP extraction failed: {e}")
+        return None, driver
+
 
 def check_chatgpt_plus_in_outlook(email, password):
     options = get_chrome_options()
@@ -260,6 +374,10 @@ def check_chatgpt_plus_in_outlook(email, password):
         print(f"Check failed: {e}")
         return f"Error: {str(e).splitlines()[0]}", driver
 
+
+
+
+
 # --- DISCORD BOT SETUP ---
 intents = discord.Intents.default()
 intents.message_content = True
@@ -268,6 +386,12 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f"🤖 Bot is logged in and ready as: {bot.user}")
+
+def parse_credentials(ctx, user_input):
+    if ":" not in user_input:
+        return None, None
+    email, password = user_input.split(":", 1)
+    return email.strip(), password.strip()
 
 def parse_multiple_credentials(user_input):
     parts = user_input.strip().split()
@@ -362,7 +486,55 @@ async def listusers_command(ctx):
     report.append("="*40)
     await ctx.send("\n".join(report))
 
+
 # --- PRIMARY WORKER BOT COMMANDS (PROTECTED) ---
+
+@bot.command(name="otp")
+@commands.check(check_authorization)
+async def otp_command(ctx, *, credentials: str = ""):
+    """Log in to Outlook and automatically fetch the latest 6-digit ChatGPT OTP / verification code"""
+    email, password = parse_credentials(ctx, credentials)
+    if not email or not password:
+        await ctx.send("⚠️ **Invalid format!** Please use: `!otp email:password`")
+        return
+        
+    await ctx.send(f"⏳ **[Outlook OTP]** Logging into `{email}` to retrieve your 6-digit verification code...")
+    
+    async with bot_semaphore:
+        # Increment active checking counter
+        with active_checks_lock:
+            global active_checks
+            active_checks += 1
+
+        local_driver = None
+        try:
+            otp_code, local_driver = await asyncio.to_thread(fetch_otp_from_outlook, email, password)
+            if otp_code:
+                await ctx.send(f"🎉 **[OTP Retrieval Successful]**")
+                await ctx.send(f"🔑 **Verification Code (Tap to copy):**")
+                await ctx.send(f"`{otp_code}`")
+            else:
+                await ctx.send(f"❌ **[OTP Retrieval Failed]** Could not find a ChatGPT verification code in the last 2 minutes. Please trigger 'Send code' in your browser and try again.")
+        except Exception as err:
+            await ctx.send(f"⚠️ **[OTP Error]** An unexpected exception occurred: `{err}`")
+        finally:
+            if local_driver:
+                try:
+                    local_driver.quit()
+                except:
+                    pass
+
+            # Decrement active checking counter and read idle state
+            with active_checks_lock:
+                active_checks -= 1
+                is_idle = (active_checks == 0)
+
+            # Perform basic heap garbage collection
+            gc.collect()
+
+            # Run aggressive process sweeping only when all checking threads are idle
+            if is_idle:
+                cleanup_chrome_processes()
 
 @bot.command(name="check")
 @commands.check(check_authorization)
@@ -388,7 +560,7 @@ async def check_command(ctx, *, credentials: str = ""):
             with active_checks_lock:
                 global active_checks
                 active_checks += 1
-                
+
             local_driver = None
             try:
                 status, local_driver = await asyncio.to_thread(check_chatgpt_plus_in_outlook, email, password)
@@ -414,10 +586,10 @@ async def check_command(ctx, *, credentials: str = ""):
                 with active_checks_lock:
                     active_checks -= 1
                     is_idle = (active_checks == 0)
-                
+
                 # Perform basic heap garbage collection
                 gc.collect()
-                
+
                 # Run aggressive process sweeping only when all checking threads are idle
                 if is_idle:
                     cleanup_chrome_processes()
@@ -461,68 +633,11 @@ async def check_command(ctx, *, credentials: str = ""):
     except:
         pass
 
-# --- CLOUD SERVER & STAY AWAKE SLEEP PREVENTION ---
 
-class RailwayHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/health" or self.path == "/":
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "healthy"}).encode("utf-8"))
-        else:
-            self.send_response(404)
-            self.end_headers()
 
-def run_http_server(port):
-    handler = RailwayHandler
-    socketserver.TCPServer.allow_reuse_address = True
-    try:
-        with socketserver.TCPServer(("", port), handler) as httpd:
-            print(f"🚀 Railway HTTP Server is running on port {port}...")
-            httpd.serve_forever()
-    except Exception as e:
-        print(f"Failed to start HTTP server: {e}")
-
-def keep_awake():
-    # Wait for the server to fully boot up first
-    time.sleep(30)
-    app_url = os.getenv("RAILWAY_STATIC_URL") or os.getenv("APP_URL")
-    if not app_url:
-        print("[Self-Pinger] RAILWAY_STATIC_URL or APP_URL not set. Skipping self-pinging.")
-        return
-        
-    if not app_url.startswith("http"):
-        app_url = f"https://{app_url}"
-        
-    print(f"[Self-Pinger] Started! Pinging {app_url} every 10 minutes to stay awake.")
-    
-    # Ignore self-signed SSL or temporary handshake issues
-    ssl_context = ssl._create_unverified_context()
-    
-    while True:
-        try:
-            req = urllib.request.Request(
-                app_url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-            )
-            with urllib.request.urlopen(req, timeout=10, context=ssl_context) as r:
-                r.read()
-            print("[Self-Pinger] Ping successful! Keeping app awake.")
-        except Exception as e:
-            print(f"[Self-Pinger] Ping failed: {e}")
-        time.sleep(600) # Ping every 10 minutes
 
 # --- START BOT ---
 if __name__ == "__main__":
-    port_env = os.getenv("PORT")
-    if port_env:
-        port = int(port_env)
-        # Start HTTP server in a daemon thread to bypass Railway health check requirements
-        threading.Thread(target=run_http_server, args=(port,), daemon=True).start()
-        # Start background self-pinger thread to prevent free-tier container sleep
-        threading.Thread(target=keep_awake, daemon=True).start()
-
     token = os.getenv("DISCORD_TOKEN")
     if not token:
         print("ERROR: DISCORD_TOKEN is missing! Please set it in your .env file.")
