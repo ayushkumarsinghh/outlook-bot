@@ -24,7 +24,7 @@ active_checks = 0
 active_checks_lock = threading.Lock()
 
 # --- ACCESS CONTROL SYSTEM ---
-OWNER_ID = 1503647930098122783
+OWNER_IDS = [1503647930098122783, 1399261885194309654]
 ALLOWED_USERS_FILE = "allowed_users.json"
 
 def load_allowed_users():
@@ -46,7 +46,7 @@ def save_allowed_users(users_list):
         print(f"Failed to save allowed users list: {e}")
 
 def is_authorized(user_id):
-    if user_id == OWNER_ID:
+    if user_id in OWNER_IDS:
         return True
     allowed = load_allowed_users()
     return user_id in allowed
@@ -424,7 +424,7 @@ async def on_command_error(ctx, error):
 @bot.command(name="adduser")
 async def adduser_command(ctx, *, user_input: str = ""):
     """Add a Discord User ID to the allowed users list (Owner Only)"""
-    if ctx.author.id != OWNER_ID:
+    if ctx.author.id not in OWNER_IDS:
         await ctx.send("❌ **Access Denied!** Only the bot Owner can run this command.")
         return
         
@@ -445,7 +445,7 @@ async def adduser_command(ctx, *, user_input: str = ""):
 @bot.command(name="removeuser")
 async def removeuser_command(ctx, *, user_input: str = ""):
     """Remove a Discord User ID from the allowed users list (Owner Only)"""
-    if ctx.author.id != OWNER_ID:
+    if ctx.author.id not in OWNER_IDS:
         await ctx.send("❌ **Access Denied!** Only the bot Owner can run this command.")
         return
         
@@ -466,7 +466,7 @@ async def removeuser_command(ctx, *, user_input: str = ""):
 @bot.command(name="listusers")
 async def listusers_command(ctx):
     """List all authorized Discord User IDs (Owner Only)"""
-    if ctx.author.id != OWNER_ID:
+    if ctx.author.id not in OWNER_IDS:
         await ctx.send("❌ **Access Denied!** Only the bot Owner can run this command.")
         return
         
@@ -474,7 +474,9 @@ async def listusers_command(ctx):
     report = []
     report.append("📋 **Authorized Discord Users List:**")
     report.append("="*40)
-    report.append(f"👑 **Owner:** <@{OWNER_ID}> (ID: `{OWNER_ID}`)")
+    
+    owners_list = [f"<@{o_id}> (ID: `{o_id}`)" for o_id in OWNER_IDS]
+    report.append(f"👑 **Owners:** {', '.join(owners_list)}")
     
     if allowed_list:
         report.append(f"👤 **Allowed Users [{len(allowed_list)}]:**")
