@@ -24,7 +24,7 @@ active_checks = 0
 active_checks_lock = threading.Lock()
 
 # --- ACCESS CONTROL SYSTEM ---
-OWNER_ID = 1074981715971428432
+OWNER_ID = 1503647930098122783
 ALLOWED_USERS_FILE = "allowed_users.json"
 
 def load_allowed_users():
