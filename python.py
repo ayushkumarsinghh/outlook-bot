@@ -101,12 +101,37 @@ def create_driver(options=None):
         err_msg = str(e)
         print(f"Auto-detect failed: {err_msg}")
         
-        # Self-healing: Parse the version from the error message if possible
-        # e.g., "Current browser version is 148.0.7778.178"
-        match = re.search(r"Current browser version is (\d+)", err_msg)
-        if match:
-            detected_ver = int(match.group(1))
-            print(f"Self-Healing: Detected Chrome version {detected_ver} from error. Retrying...")
+        # Self-healing: Parse version aggressively from error message
+        # Handled cases: "This version of ChromeDriver only supports Chrome version XX" OR "Current browser version is XX.X.X"
+        detected_ver = None
+        match1 = re.search(r"Current browser version is (\d+)", err_msg)
+        match2 = re.search(r"only supports Chrome version (\d+)", err_msg)
+        match3 = re.search(r"supports Chrome version (\d+)", err_msg)
+        
+        if match1:
+            detected_ver = int(match1.group(1))
+        elif match2:
+            detected_ver = int(match2.group(1))
+        elif match3:
+            detected_ver = int(match3.group(1))
+            
+        # If we failed to get it from error but we are on Linux, try finding it via command line
+        if not detected_ver:
+            try:
+                import subprocess
+                out = subprocess.check_output(["google-chrome", "--version"]).decode("utf-8")
+                detected_ver = int(out.strip().split()[-1].split(".")[0])
+                print(f"Detected Chrome version via CLI: {detected_ver}")
+            except:
+                try:
+                    out = subprocess.check_output(["chromium-browser", "--version"]).decode("utf-8")
+                    detected_ver = int(out.strip().split()[-1].split(".")[0])
+                    print(f"Detected Chromium version via CLI: {detected_ver}")
+                except:
+                    pass
+
+        if detected_ver:
+            print(f"Self-Healing: Detected Chrome version {detected_ver}. Initializing driver...")
             try:
                 retry_options = get_chrome_options()
                 return uc.Chrome(options=retry_options, version_main=detected_ver)
@@ -142,8 +167,8 @@ def create_driver(options=None):
                 except Exception as reg_err:
                     print(f"Failed with version_main={major_version}: {reg_err}")
 
-        # Fallback to common versions
-        for ver in [148, 147, 149]:
+        # Fallback to common versions (including 148, 147, 149)
+        for ver in [148, 147, 149, 146]:
             try:
                 print(f"Initializing Chrome driver with fallback version_main={ver}...")
                 fallback_options = get_chrome_options()
@@ -151,7 +176,7 @@ def create_driver(options=None):
             except Exception:
                 pass
 
-        # If all else fails, try one last time to let the error propagate
+        # If all else fails, try one last time with auto-detect to let the error propagate
         print("All Chrome driver initialization attempts failed. Trying final fallback...")
         final_options = get_chrome_options()
         return uc.Chrome(options=final_options)
@@ -636,7 +661,7 @@ async def check_command(ctx, *, credentials: str = ""):
         pass
 
 
-
+        
 
 # --- START BOT ---
 if __name__ == "__main__":
