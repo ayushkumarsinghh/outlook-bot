@@ -249,60 +249,113 @@ def fetch_otp_from_outlook(email, password):
         except Exception:
             pass
             
-        print("Outlook logged in. Scanning for ChatGPT verification code...")
+        print("Outlook logged in. Searching for ChatGPT verification code using py3.py logic...")
         time.sleep(3)
         
-        start_time = time.time()
-        extracted_otp = None
+        chatgpt_email_found = False
+        extracted_code = None
         
+        try:
+            search_input = wait.until(EC.element_to_be_clickable((By.ID, "topSearchInput")))
+            search_input.click()
+            time.sleep(1)
+            search_input.clear()
+            
+            search_term = "chatgpt code"
+            print(f"Typing search query: {search_term}")
+            search_input.send_keys(search_term)
+            time.sleep(0.5)
+            search_input.send_keys("\n")
+            print("Search submitted successfully.")
+            
+            print("Waiting for search results to display...")
+            time.sleep(2)
+            
+            empty_state = driver.find_elements(By.XPATH, "//span[contains(text(), 'No more results to show')]")
+            if empty_state:
+                print("No search results found! Opening TOPMOST email...")
+                time.sleep(0.5)
+                top_email = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "div[data-focusable-row='true'][role='option']")))
+                top_email.click()
+                print("Clicked TOPMOST email!")
+                chatgpt_email_found = True
+            else:
+                items = driver.find_elements(By.CSS_SELECTOR, "div[data-focusable-row='true'][role='option']")
+                print(f"Found {len(items)} email list items to scan.")
+                
+                for item in items:
+                    text = (item.text or "")
+                    aria_label = (item.get_attribute("aria-label") or "")
+                    combined_text = (text + " " + aria_label).lower()
+                    
+                    if "chatgpt" in combined_text and "verification code" in combined_text or "temporary chatgpt login code" in combined_text:
+                        code_match = re.search(r'verification code\D*(\d{6})', combined_text, re.IGNORECASE)
+                        if code_match:
+                            extracted_code = code_match.group(1)
+                            print(f"Extracted verification code from preview: {extracted_code}")
+                        
+                        item.click()
+                        print("Clicked ChatGPT verification email!")
+                        chatgpt_email_found = True
+                        break
+        except Exception as scan_err:
+            print("Error during search and scan:", scan_err)
+            
+        if not chatgpt_email_found:
+            print("Email not clicked yet. Opening topmost email as fallback...")
+            try:
+                top_email = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "div[data-focusable-row='true'][role='option']")))
+                top_email.click()
+                print("Clicked TOPMOST email fallback!")
+                chatgpt_email_found = True
+            except Exception as top_err:
+                print(f"Failed to click topmost email: {top_err}")
+                
+        print("Monitoring for OpenAI verification codes in email body (py3.py logic)...")
+        time.sleep(4)
+        
+        start_time = time.time()
         while time.time() - start_time < 120:
             try:
-                # Force refresh the inbox page to get the absolute latest emails instantly
-                driver.get("https://outlook.live.com/mail/0/inbox")
-                time.sleep(5)
+                code_to_enter = None
                 
-                items = driver.find_elements(By.CSS_SELECTOR, "div[data-focusable-row='true'][role='option']")
-                if items:
-                    for item in items[:5]:
-                        text = item.text or ""
-                        aria_label = item.get_attribute("aria-label") or ""
-                        combined_text = (text + " " + aria_label).lower()
-                        
-                        if "chatgpt" in combined_text or "openai" in combined_text or "verification" in combined_text or "temporary login" in combined_text:
-                            # 1. Try extracting 6-digit code directly from preview
-                            match = re.search(r'\b\d{6}\b', combined_text)
-                            if match:
-                                extracted_otp = match.group(0)
-                                print(f"Found code directly in email preview: {extracted_otp}")
-                                return extracted_otp, driver
-                                
-                            # 2. Click to open email if not in preview
-                            item.click()
-                            time.sleep(4)
-                            
-                            try:
-                                elements = driver.find_elements(By.XPATH, "//*[contains(@style, 'Menlo') or contains(@style, 'Monaco') or contains(@style, 'F3F3F3')]")
-                                for elem in elements:
-                                    val = elem.text.strip()
-                                    if len(val) == 6 and val.isdigit():
-                                        return val, driver
-                            except:
-                                pass
-                            
-                            try:
-                                body_text = driver.find_element(By.TAG_NAME, "body").text
-                                match = re.search(r'(?:code|continue|verification):\s*(\d{6})', body_text, re.IGNORECASE)
-                                if match:
-                                    return match.group(1), driver
-                                else:
-                                    matches = re.findall(r'\b\d{6}\b', body_text)
-                                    if matches:
-                                        return matches[0], driver
-                            except:
-                                pass
-            except Exception as scan_err:
-                print(f"Error during inbox scanning: {scan_err}")
-            time.sleep(5)
+                # Style-based Menlo/Monaco scanning
+                try:
+                    elements = driver.find_elements(By.XPATH, "//*[contains(@style, 'Menlo') or contains(@style, 'Monaco') or contains(@style, 'F3F3F3')]")
+                    for elem in elements:
+                        text = elem.text.strip()
+                        if len(text) == 6 and text.isdigit():
+                            code_to_enter = text
+                            print(f"Copied code from styled element: {code_to_enter}")
+                            return code_to_enter, driver
+                except Exception:
+                    pass
+                
+                # Pre-extracted preview code check
+                if not code_to_enter and extracted_code:
+                    code_to_enter = extracted_code
+                    print(f"Using pre-extracted code: {code_to_enter}")
+                    return code_to_enter, driver
+                
+                # General body parsing fallback
+                if not code_to_enter:
+                    try:
+                        page_text = driver.find_element(By.TAG_NAME, "body").text
+                        match = re.search(r'(?:continue|code):\s*(\d{6})', page_text, re.IGNORECASE)
+                        if match:
+                            code_to_enter = match.group(1)
+                            return code_to_enter, driver
+                        else:
+                            matches = re.findall(r'\b\d{6}\b', page_text)
+                            if matches:
+                                code_to_enter = matches[0]
+                                return code_to_enter, driver
+                    except Exception:
+                        pass
+            except Exception as e:
+                print("Error during code checking cycle:", e)
+            
+            time.sleep(3)
             
         return None, driver
     except Exception as e:
